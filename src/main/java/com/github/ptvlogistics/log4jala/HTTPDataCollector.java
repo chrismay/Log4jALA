@@ -36,6 +36,7 @@ public class HTTPDataCollector {
 	private Log4jALAAppender appender;
 	private String proxyHost;
 	private Integer proxyPort;
+	private final int asyncThreadPoolSize;
 
 	/**
 	 * Wrapper for reporting custom JSON events to Azure Log Analytics
@@ -54,12 +55,9 @@ public class HTTPDataCollector {
 	public HTTPDataCollector(String workspaceId, String sharedKey, int asyncThreadPoolSize, Log4jALAAppender appender,
 			String proxyHost, Integer proxyPort) {
 		this.appender = appender;
+		this.asyncThreadPoolSize = asyncThreadPoolSize;
 		if(executorService == null || executorService.isTerminated()){
-			final ThreadFactory threadFactory = new ALAThreadFactoryBuilder()
-			        .setNameFormat("AlaHTTDataCollector-Thread")
-			        .setDaemon(true)
-			        .build();
-			executorService = Executors.newFixedThreadPool(asyncThreadPoolSize, threadFactory);
+			this.executorService = createExecutorService(asyncThreadPoolSize);
 		}
 		this.workspaceId = workspaceId;
 		this.sharedKey = sharedKey;
@@ -84,7 +82,7 @@ public class HTTPDataCollector {
 	 */
 	public void collect(final String logType, final Object objectToSerialize, final String apiVersion,
 			final String timeGeneratedPropertyName) {
-
+		ensureExecutorServiceIsAvailable();
 		executorService.execute(new Runnable() {
 			public void run() {
 				try {
@@ -117,6 +115,7 @@ public class HTTPDataCollector {
 	 */
 	public void collect(String logType, String jsonPayload, String apiVersion, String timeGeneratedPropertyName)
 			throws Exception {
+		ensureExecutorServiceIsAvailable();
 		executorService.execute(new Runnable() {
 			public void run() {
 				try {
@@ -259,6 +258,30 @@ public class HTTPDataCollector {
 		byte[] calculatedHash = sha256_HMAC.doFinal(bytesToHash);
 		String stringHash = Base64.getEncoder().encodeToString(calculatedHash);
 		return "SharedKey " + this.workspaceId + ":" + stringHash;
+	}
+
+	/**
+	 * Check that the executorService is not terminated. If it is, replace it with a
+	 * new one.
+	 * This should not be common, but can happen if the classloader
+	 * which originally loaded Log4jALA has been replaced.
+	 * 
+	 * Attempting to execute a task on an ExecutorService which has been terminated
+	 * will result in a RejectedExecutionException and the task will not run
+	 */
+	private void ensureExecutorServiceIsAvailable() {
+		if (executorService.isTerminated()) {
+			appender.logError("Executor Service was terminated; creating a new one", null);
+			this.executorService = createExecutorService(this.asyncThreadPoolSize);
+		}
+	}
+
+	private ExecutorService createExecutorService(int threadPoolSize) {
+		final ThreadFactory threadFactory = new ALAThreadFactoryBuilder()
+				.setNameFormat("AlaHTTDataCollector-Thread")
+				.setDaemon(true)
+				.build();
+		return Executors.newFixedThreadPool(threadPoolSize, threadFactory);
 	}
 
 }
